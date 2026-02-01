@@ -13,4 +13,7 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nShutting down bot...")
+        # Clean shutdown for music
+        if dj_bot.plugin and dj_bot.current_room_id:
+            dj_bot.plugin._stop_internal(dj_bot.current_room_id)
         sys.exit(0)
