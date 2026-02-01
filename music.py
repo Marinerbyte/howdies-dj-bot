@@ -1,4 +1,5 @@
-import time, asyncio, threading, yt_dlp
+import time, asyncio, threading, yt_dlp, re # Added re for robust fingerprint
+# Fix: Nayi aiortc me MediaPlayer contrib se aata hai
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
@@ -23,8 +24,11 @@ class DJPlugin:
             return None, None
 
     def _run_async(self, coro):
-        try: loop = asyncio.get_event_loop()
-        except RuntimeError: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
 
     def handle_message(self, data):
@@ -68,10 +72,11 @@ class DJPlugin:
 
             self.bot.send_message(room_id, f"🎶 **Playing:** {title}")
             with self.lock:
+                # Agar pehle se gana chal raha hai to use band karo
                 if room_id in self.sessions:
-                    self._stop_internal(room_id)
+                    self._stop_internal(room_id) # Purana gana band karo
                 self.sessions[room_id] = {'url': real_url}
-
+            
             # Join request bhejo (bhale hi pehle se joined ho, handshake ke liye zaroori hai)
             self.bot.send_json({"handler": "audioroom", "action": "join", "roomId": str(room_id)})
 
@@ -103,23 +108,31 @@ class DJPlugin:
 
     def _handle_audio_signal(self, data):
         msg_type = data.get("type")
+        
+        # Debug Print for all audioroom messages
+        print(f"[Audio Signal Debug] Received type: {msg_type} from server.")
+
         if msg_type == "transport-created":
             transports = data.get("transports", {})
             send_t = transports.get("send", {})
             
-            # --- ROOM ID FIX (n.py se inspired) ---
-            room_id = self.bot.current_room_id
+            # --- ROOM ID FIX ---
+            # Ab room ID ko bot ke main instance (bot.py) se lenge
+            room_id = self.bot.current_room_id 
             
             if not room_id:
                 print("[Audio Error] Could not determine room_id for transport-created. Bot not in a room yet?")
                 return
 
             if room_id and send_t:
+                print(f"[Audio Debug {room_id}] transport-created received. Initializing PeerConnection...")
                 pc = RTCPeerConnection()
+                
                 with self.lock:
                     self.sessions[room_id]['pc'] = pc
                 stream_url = self.sessions[room_id].get('url')
 
+                # If no stream_url, we just want to join the mic, not produce
                 if stream_url:
                     try:
                         player = MediaPlayer(stream_url)
@@ -127,23 +140,44 @@ class DJPlugin:
                             pc.addTrack(player.audio)
                             with self.lock:
                                 self.sessions[room_id]['player'] = player
+                        print(f"[Audio Debug {room_id}] MediaPlayer created and track added for {stream_url}.")
                     except Exception as e:
-                        print(f"MediaPlayer Error: {e}")
+                        print(f"[Audio Error {room_id}] MediaPlayer Init failed for {stream_url}: {e}. Will proceed without audio track.")
+                        # This allows the bot to still join mic even if MediaPlayer fails for initial auto-join
 
                 async def connect():
+                    print(f"[Audio Debug {room_id}] Starting WebRTC connect_sequence...")
                     offer = await pc.createOffer()
                     await pc.setLocalDescription(offer)
-                    fp = pc.localDescription.sdp.split("fingerprint:sha-256 ")[1].split("\r\n")[0]
+                    print(f"[Audio Debug {room_id}] Local description set. SDP (first 100 chars): {pc.localDescription.sdp[:100]}...")
+                    
+                    sdp = pc.localDescription.sdp
+                    # Robust fingerprint extraction
+                    fp_match = re.search(r"fingerprint:sha-256 (.*)", sdp)
+                    fp = fp_match.group(1).strip() if fp_match else "UNKNOWN_FP"
+                    print(f"[Audio Debug {room_id}] Extracted DTLS Fingerprint: {fp}")
                     
                     self.bot.send_json({"handler": "audioroom", "action": "connect-transport", "roomId": str(room_id), "direction": "send", "transportId": send_t.get("id"), "dtlsParameters": {"role": "client", "fingerprints": [{"algorithm": "sha-256", "value": fp}]}})
+                    print(f"[Audio Debug {room_id}] Sent connect-transport for {send_t.get('id')}.")
+                    
+                    await asyncio.sleep(0.5) # Timing adjust
                     self.bot.send_json({"handler": "audioroom", "action": "transports-ready", "roomId": str(room_id)})
-                    
-                    if stream_url:
+                    print(f"[Audio Debug {room_id}] Sent transports-ready.")
+
+                    await asyncio.sleep(0.5) # Timing adjust
+                    # Only produce if there is an active stream_url
+                    if stream_url: # Produce only when actually playing music
                         self.bot.send_json({"handler": "audioroom", "action": "produce", "roomId": str(room_id), "kind": "audio", "rtpParameters": {"codecs": [{"mimeType": "audio/opus", "payloadType": 111, "clockRate": 48000, "channels": 2, "parameters": {"minptime": 10, "useinbandfec": 1}}], "encodings": [{"ssrc": 11111111}]}, "requestId": int(time.time() * 1000)})
-                    
-                    print(f"[Audio] Handshake for {room_id} Complete.")
+                        print(f"[Audio Debug {room_id}] Sent produce request (with stream).")
+                    else:
+                        print(f"[Audio Debug {room_id}] Not sending produce request (no stream_url, just mic joined).") # For auto-join mic only
+
+                    print(f"[Audio] Handshake for {room_id} Complete (status: {'producing' if stream_url else 'mic only'}).")
 
                 threading.Thread(target=self._run_async, args=(connect(),), daemon=True).start()
 
         elif msg_type == "producer-created":
-            print("[Audio] ✅ Stream is LIVE!")
+            print("[Audio] ✅ Stream is LIVE! Producer created.")
+        elif msg_type == "error":
+            error_data = data.get('data', {})
+            print(f"[Audio Error from Server] Code: {error_data.get('code')}, Message: {error_data.get('message')}")
