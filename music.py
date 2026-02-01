@@ -1,8 +1,4 @@
-import time
-import asyncio
-import threading
-import yt_dlp
-import re # Add this for robust regex
+import time, asyncio, threading, yt_dlp
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
@@ -20,31 +16,27 @@ class DJPlugin:
             loop = asyncio.get_event_loop()
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = await loop.run_in_executor(None, lambda: ydl.extract_info(query, download=False))
-                if 'entries' in info:
-                    info = info['entries'][0]
+                if 'entries' in info: info = info['entries'][0]
                 return info.get('url'), info.get('title', 'Audio Track')
         except Exception as e:
             print(f"YT-DLP Error: {e}")
             return None, None
 
     def _run_async(self, coro):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        try: loop = asyncio.get_event_loop()
+        except RuntimeError: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
 
     def handle_message(self, data):
         handler = data.get("handler")
-        # Handle chat commands
-        if handler == "chatroommessage":
+        # Handle chat commands (sirf jab bot already room me ho)
+        if handler == "chatroommessage" and self.bot.current_room_id:
             text = data.get("text", "").strip()
             if text.startswith("!"):
                 parts = text[1:].split()
                 cmd = parts[0].lower()
                 args = parts[1:]
-                room_id = data.get("roomid")
+                room_id = data.get("roomid") # Ye room_id current_room_id se match hona chahiye
 
                 if cmd == "play":
                     self._handle_play(room_id, args)
@@ -56,13 +48,18 @@ class DJPlugin:
             self._handle_audio_signal(data)
 
     def _handle_play(self, room_id, args):
+        # Yahan room_id ko validate karo
+        if str(room_id) != str(self.bot.current_room_id):
+            print(f"[DJ] Ignoring play command from {room_id}. Bot is in {self.bot.current_room_id}.")
+            return # Agar galat room se command aayi to ignore karo
+
         if not args:
             self.bot.send_message(room_id, "Usage: `!play <song name>`")
             return
 
         query = " ".join(args)
         self.bot.send_message(room_id, f"🔍 Searching: **{query}**...")
-        
+
         def start_playback():
             real_url, title = self._run_async(self._get_stream_url(query))
             if not real_url:
@@ -71,23 +68,28 @@ class DJPlugin:
 
             self.bot.send_message(room_id, f"🎶 **Playing:** {title}")
             with self.lock:
-                # Agar pehle se gana chal raha hai to use band karo
                 if room_id in self.sessions:
-                    self._stop_internal(room_id) # Purana gana band karo
+                    self._stop_internal(room_id)
                 self.sessions[room_id] = {'url': real_url}
-            
+
             # Join request bhejo (bhale hi pehle se joined ho, handshake ke liye zaroori hai)
             self.bot.send_json({"handler": "audioroom", "action": "join", "roomId": str(room_id)})
 
         threading.Thread(target=start_playback, daemon=True).start()
 
     def _handle_stop(self, room_id):
+        # Yahan bhi room_id validate karo
+        if str(room_id) != str(self.bot.current_room_id):
+            print(f"[DJ] Ignoring stop command from {room_id}. Bot is in {self.bot.current_room_id}.")
+            return
+
         self._stop_internal(room_id)
+        # Send leave signal
         self.bot.send_json({"handler": "audioroom", "action": "leave", "roomId": str(room_id)})
         self.bot.send_message(room_id, "⏹️ Music Stopped and Left Stage.")
-        # Auto re-join stage ko hata diya hai, kyuki ye connection issue kar raha tha
-        # time.sleep(1)
-        # self.bot.send_json({"handler": "audioroom", "action": "join", "roomId": str(room_id)})
+        # Auto re-join stage (Ready for next song)
+        time.sleep(1)
+        self.bot.send_json({"handler": "audioroom", "action": "join", "roomId": str(room_id)})
 
 
     def _stop_internal(self, room_id):
@@ -105,16 +107,15 @@ class DJPlugin:
             transports = data.get("transports", {})
             send_t = transports.get("send", {})
             
-            room_id = self.bot.current_room_id 
+            # --- ROOM ID FIX (n.py se inspired) ---
+            room_id = self.bot.current_room_id
             
             if not room_id:
-                print("[Audio Error] Could not determine room_id for transport-created.")
+                print("[Audio Error] Could not determine room_id for transport-created. Bot not in a room yet?")
                 return
 
             if room_id and send_t:
-                print(f"[Audio Debug {room_id}] Initializing PeerConnection...")
                 pc = RTCPeerConnection()
-                
                 with self.lock:
                     self.sessions[room_id]['pc'] = pc
                 stream_url = self.sessions[room_id].get('url')
@@ -126,34 +127,19 @@ class DJPlugin:
                             pc.addTrack(player.audio)
                             with self.lock:
                                 self.sessions[room_id]['player'] = player
-                        print(f"[Audio Debug {room_id}] MediaPlayer created and track added.")
                     except Exception as e:
-                        print(f"[Audio Error {room_id}] MediaPlayer Init failed: {e}")
-                        return # Important: Agar MediaPlayer fail hua to aage mat badho
+                        print(f"MediaPlayer Error: {e}")
 
                 async def connect():
-                    print(f"[Audio Debug {room_id}] Creating WebRTC offer...")
                     offer = await pc.createOffer()
                     await pc.setLocalDescription(offer)
-                    print(f"[Audio Debug {room_id}] Local description set. SDP: {pc.localDescription.sdp[:100]}...")
-                    
-                    sdp = pc.localDescription.sdp
-                    # Robust fingerprint extraction
-                    fp_match = re.search(r"fingerprint:sha-256 (.*)", sdp)
-                    fp = fp_match.group(1).strip() if fp_match else "UNKNOWN_FP"
-                    print(f"[Audio Debug {room_id}] Extracted DTLS Fingerprint: {fp}")
+                    fp = pc.localDescription.sdp.split("fingerprint:sha-256 ")[1].split("\r\n")[0]
                     
                     self.bot.send_json({"handler": "audioroom", "action": "connect-transport", "roomId": str(room_id), "direction": "send", "transportId": send_t.get("id"), "dtlsParameters": {"role": "client", "fingerprints": [{"algorithm": "sha-256", "value": fp}]}})
-                    print(f"[Audio Debug {room_id}] Sent connect-transport for {send_t.get('id')}.")
+                    self.bot.send_json({"handler": "audioroom", "action": "transports-ready", "roomId": str(room_id)})
                     
-                    await asyncio.sleep(0.5) # Timing adjust
-                    send_req(self.bot, "transports-ready", room_id)
-                    print(f"[Audio Debug {room_id}] Sent transports-ready.")
-
-                    await asyncio.sleep(0.5) # Timing adjust
                     if stream_url:
                         self.bot.send_json({"handler": "audioroom", "action": "produce", "roomId": str(room_id), "kind": "audio", "rtpParameters": {"codecs": [{"mimeType": "audio/opus", "payloadType": 111, "clockRate": 48000, "channels": 2, "parameters": {"minptime": 10, "useinbandfec": 1}}], "encodings": [{"ssrc": 11111111}]}, "requestId": int(time.time() * 1000)})
-                        print(f"[Audio Debug {room_id}] Sent produce request.")
                     
                     print(f"[Audio] Handshake for {room_id} Complete.")
 
