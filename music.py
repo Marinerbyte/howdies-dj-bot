@@ -1,12 +1,11 @@
 import time, asyncio, threading, yt_dlp, re # Added re for robust fingerprint
-# Fix: Nayi aiortc me MediaPlayer contrib se aata hai
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
 class DJPlugin:
     def __init__(self, bot):
         self.bot = bot
-        self.sessions = {}  # { roomId: { 'pc', 'player', 'url' } }
+        self.sessions = {}  # { roomId: { 'pc', 'player', 'url', 'routerRtpCapabilities' } } # Added rtp capabilities
         self.lock = threading.Lock()
 
     async def _get_stream_url(self, query):
@@ -52,10 +51,9 @@ class DJPlugin:
             self._handle_audio_signal(data)
 
     def _handle_play(self, room_id, args):
-        # Yahan room_id ko validate karo
         if str(room_id) != str(self.bot.current_room_id):
             print(f"[DJ] Ignoring play command from {room_id}. Bot is in {self.bot.current_room_id}.")
-            return # Agar galat room se command aayi to ignore karo
+            return
 
         if not args:
             self.bot.send_message(room_id, "Usage: `!play <song name>`")
@@ -63,7 +61,7 @@ class DJPlugin:
 
         query = " ".join(args)
         self.bot.send_message(room_id, f"🔍 Searching: **{query}**...")
-
+        
         def start_playback():
             real_url, title = self._run_async(self._get_stream_url(query))
             if not real_url:
@@ -72,9 +70,8 @@ class DJPlugin:
 
             self.bot.send_message(room_id, f"🎶 **Playing:** {title}")
             with self.lock:
-                # Agar pehle se gana chal raha hai to use band karo
                 if room_id in self.sessions:
-                    self._stop_internal(room_id) # Purana gana band karo
+                    self._stop_internal(room_id)
                 self.sessions[room_id] = {'url': real_url}
             
             # Join request bhejo (bhale hi pehle se joined ho, handshake ke liye zaroori hai)
@@ -83,16 +80,13 @@ class DJPlugin:
         threading.Thread(target=start_playback, daemon=True).start()
 
     def _handle_stop(self, room_id):
-        # Yahan bhi room_id validate karo
         if str(room_id) != str(self.bot.current_room_id):
             print(f"[DJ] Ignoring stop command from {room_id}. Bot is in {self.bot.current_room_id}.")
             return
 
         self._stop_internal(room_id)
-        # Send leave signal
         self.bot.send_json({"handler": "audioroom", "action": "leave", "roomId": str(room_id)})
         self.bot.send_message(room_id, "⏹️ Music Stopped and Left Stage.")
-        # Auto re-join stage (Ready for next song)
         time.sleep(1)
         self.bot.send_json({"handler": "audioroom", "action": "join", "roomId": str(room_id)})
 
@@ -109,20 +103,22 @@ class DJPlugin:
     def _handle_audio_signal(self, data):
         msg_type = data.get("type")
         
-        # Debug Print for all audioroom messages
-        print(f"[Audio Signal Debug] Received type: {msg_type} from server.")
+        print(f"[Audio Signal Debug] Received type: {msg_type} from server for Room: {self.bot.current_room_id}.")
 
         if msg_type == "transport-created":
             transports = data.get("transports", {})
             send_t = transports.get("send", {})
+            router_rtp_capabilities = data.get("routerRtpCapabilities", {}) # <-- NEW: routerRtpCapabilities capture
             
-            # --- ROOM ID FIX ---
-            # Ab room ID ko bot ke main instance (bot.py) se lenge
             room_id = self.bot.current_room_id 
             
             if not room_id:
                 print("[Audio Error] Could not determine room_id for transport-created. Bot not in a room yet?")
                 return
+
+            with self.lock:
+                if room_id not in self.sessions: self.sessions[room_id] = {}
+                self.sessions[room_id]['routerRtpCapabilities'] = router_rtp_capabilities # <-- NEW: Store capabilities
 
             if room_id and send_t:
                 print(f"[Audio Debug {room_id}] transport-created received. Initializing PeerConnection...")
@@ -132,7 +128,6 @@ class DJPlugin:
                     self.sessions[room_id]['pc'] = pc
                 stream_url = self.sessions[room_id].get('url')
 
-                # If no stream_url, we just want to join the mic, not produce
                 if stream_url:
                     try:
                         player = MediaPlayer(stream_url)
@@ -152,7 +147,6 @@ class DJPlugin:
                     print(f"[Audio Debug {room_id}] Local description set. SDP (first 100 chars): {pc.localDescription.sdp[:100]}...")
                     
                     sdp = pc.localDescription.sdp
-                    # Robust fingerprint extraction
                     fp_match = re.search(r"fingerprint:sha-256 (.*)", sdp)
                     fp = fp_match.group(1).strip() if fp_match else "UNKNOWN_FP"
                     print(f"[Audio Debug {room_id}] Extracted DTLS Fingerprint: {fp}")
@@ -165,10 +159,28 @@ class DJPlugin:
                     print(f"[Audio Debug {room_id}] Sent transports-ready.")
 
                     await asyncio.sleep(0.5) # Timing adjust
-                    # Only produce if there is an active stream_url
-                    if stream_url: # Produce only when actually playing music
-                        self.bot.send_json({"handler": "audioroom", "action": "produce", "roomId": str(room_id), "kind": "audio", "rtpParameters": {"codecs": [{"mimeType": "audio/opus", "payloadType": 111, "clockRate": 48000, "channels": 2, "parameters": {"minptime": 10, "useinbandfec": 1}}], "encodings": [{"ssrc": 11111111}]}, "requestId": int(time.time() * 1000)})
-                        print(f"[Audio Debug {room_id}] Sent produce request (with stream).")
+                    # --- NEW: PRODUCE using routerRtpCapabilities (Document Section 5.5) ---
+                    rtp_parameters = None
+                    if router_rtp_capabilities and router_rtp_capabilities.get('codecs'):
+                        opus_codec = next((c for c in router_rtp_capabilities['codecs'] if c['mimeType'] == 'audio/opus'), None)
+                        if opus_codec:
+                            rtp_parameters = {
+                                "codecs": [opus_codec], # Server ne jo codec diya wahi use karo
+                                "encodings": [{"ssrc": random.randint(10000000, 99999999)}] # Random SSRC
+                            }
+                            print(f"[Audio Debug {room_id}] Using server-provided Opus RTP parameters: {opus_codec.get('payloadType')}.")
+                        else:
+                            print(f"[Audio Debug {room_id}] Opus codec not found in routerRtpCapabilities. Using default.")
+                    
+                    if not rtp_parameters: # Fallback to default if server didn't provide specific Opus or failed to find it
+                        rtp_parameters = {
+                            "codecs": [{"mimeType": "audio/opus", "payloadType": 111, "clockRate": 48000, "channels": 2, "parameters": {"minptime": 10, "useinbandfec": 1}}],
+                            "encodings": [{"ssrc": random.randint(10000000, 99999999)}]
+                        }
+
+                    if stream_url:
+                        self.bot.send_json({"handler": "audioroom", "action": "produce", "roomId": str(room_id), "kind": "audio", "rtpParameters": rtp_parameters, "requestId": int(time.time() * 1000)})
+                        print(f"[Audio Debug {room_id}] Sent produce request (with stream) using: {rtp_parameters}.")
                     else:
                         print(f"[Audio Debug {room_id}] Not sending produce request (no stream_url, just mic joined).") # For auto-join mic only
 
