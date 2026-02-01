@@ -1,8 +1,9 @@
 import websocket, json, threading, time, uuid, requests, traceback
-import music
+import music # Ye humara music plugin hai
 
 class HowdiesBot:
     def __init__(self):
+        # --- HARDCODED CREDENTIALS ---
         self.USERNAME = "kamina"
         self.PASSWORD = "p99665"
         self.DEFAULT_ROOM = "goodness"
@@ -45,27 +46,37 @@ class HowdiesBot:
     def on_open(self, ws):
         print("[DJ] WebSocket Connected. Sending login sequence...")
         self.send_json({"handler": "login", "username": self.USERNAME, "password": self.PASSWORD})
+        # 1 Second baad Room Join request bhejo
         threading.Timer(1, self._join_chat_room).start()
 
     def _join_chat_room(self):
         print(f"[DJ] Attempting to join chat room: {self.DEFAULT_ROOM}")
         self.send_json({"handler": "joinchatroom", "id": uuid.uuid4().hex, "name": self.DEFAULT_ROOM})
 
-    def on_message(self, ws, msg): # <-- YAHAN BADLAV KIYA GAYA HAI
+    def on_message(self, ws, msg):
         try:
             data = json.loads(msg)
-            print(f"[DJ BOT - Raw Message] Handler: {data.get('handler')}, Type: {data.get('type')}, Room: {data.get('roomid')}") # <-- DEBUG PRINT
-
-            # --- ROOM_ID aur MY_ID update ---
-            if data.get("handler") == "login":
-                self.user_id = data.get("userid")
-            elif data.get("handler") == "joinchatroom" and data.get("name") == self.DEFAULT_ROOM:
-                self.current_room_id = data.get("roomid")
-                print(f"[DJ] Joined Chat Room: {self.DEFAULT_ROOM} (ID: {self.current_room_id}). Auto-joining audio stage in 1s...")
-                threading.Timer(1, self._auto_join_audio).start()
+            handler = data.get("handler")
             
-            # --- ALL MESSAGES TO PLUGIN ---
-            # Har message ko plugin tak bhejo, plugin khud decide karega kya karna hai.
+            # Debugging ke liye (Zaroori hai abhi)
+            # print(f"[Raw] Handler: {handler}") 
+
+            # --- 1. LOGIN CONFIRMATION ---
+            if handler == "login":
+                self.user_id = data.get("userid")
+
+            # --- 2. CHAT ROOM JOIN SUCCESS ---
+            # Humne name check hata diya hai, ab bas joinchatroom aate hi audio trigger hoga
+            elif handler == "joinchatroom":
+                self.current_room_id = data.get("roomid")
+                
+                if self.current_room_id:
+                    print(f"[DJ] ✅ Chat Room Joined (ID: {self.current_room_id}). Starting Audio Sequence...")
+                    # 1 Second baad Audio Join request bhejo
+                    threading.Timer(1, self._auto_join_audio).start()
+
+            # --- 3. FORWARD TO MUSIC PLUGIN ---
+            # Har message plugin ko do, taaki wo 'audioroom' wale signals pakad sake
             self.plugin.handle_message(data)
 
         except Exception as e:
@@ -73,10 +84,10 @@ class HowdiesBot:
     
     def _auto_join_audio(self):
         if self.current_room_id:
-            print(f"[DJ] Sending audioroom join for ID: {self.current_room_id}.")
+            print(f"[DJ] Sending audioroom join request for Room ID: {self.current_room_id}")
             self.send_json({"handler": "audioroom", "action": "join", "roomId": str(self.current_room_id)})
         else:
-            print("[DJ Error] Cannot auto-join audio: current_room_id is None. Room join failed?")
+            print("[DJ Error] Cannot auto-join audio: Room ID not found.")
 
     def on_error(self, ws, error): print(f"WS Error: {error}")
     def on_close(self, ws, _, __): 
