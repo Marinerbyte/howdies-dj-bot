@@ -6,7 +6,7 @@ class HowdiesBot:
         # --- HARDCODED CREDENTIALS (from n.py) ---
         self.USERNAME = "kamina"
         self.PASSWORD = "p99665"
-        self.DEFAULT_ROOM = "goodness"
+        self.DEFAULT_ROOM = "goodness" # Ab Default Room set hai
         
         self.token = None
         self.user_id = None # MY_ID (from n.py)
@@ -45,7 +45,11 @@ class HowdiesBot:
         threading.Thread(target=lambda: self.ws.run_forever(ping_interval=15, ping_timeout=10), daemon=True).start()
 
     def on_open(self, ws):
-        print("[DJ] WebSocket Connected. Joining Room...")
+        print("[DJ] WebSocket Connected. Delaying initial Room Join by 1s...") # <-- NEW Delay here
+        threading.Timer(1, self._join_chat_room).start()
+
+    def _join_chat_room(self): # New method to encapsulate chat room join
+        print(f"[DJ] Attempting to join chat room: {self.DEFAULT_ROOM}")
         self.send_json({"handler": "joinchatroom", "id": uuid.uuid4().hex, "name": self.DEFAULT_ROOM})
 
     def on_message(self, ws, msg): # <-- n.py se inspired
@@ -57,9 +61,10 @@ class HowdiesBot:
             if data.get("handler") == "login":
                 self.user_id = data.get("userid") # MY_ID
 
-            if data.get("handler") == "joinchatroom":
+            # Join Confirmation (Chat Room)
+            if data.get("handler") == "joinchatroom" and data.get("name") == self.DEFAULT_ROOM:
                 self.current_room_id = data.get("roomid") # ROOM_ID
-                print(f"[DJ] Joined Room: {self.DEFAULT_ROOM} (ID: {self.current_room_id}). Auto-joining audio stage in 2s...")
+                print(f"[DJ] Joined Chat Room: {self.DEFAULT_ROOM} (ID: {self.current_room_id}). Auto-joining audio stage in 2s...") # Existing 2s delay
                 threading.Timer(2, self._auto_join_audio).start()
 
             # System aur Chat messages ko plugin tak bhejo
@@ -70,8 +75,10 @@ class HowdiesBot:
     
     def _auto_join_audio(self):
         if self.current_room_id:
+            print(f"[DJ] Sending audioroom join for ID: {self.current_room_id}.") # Debug Print
             self.send_json({"handler": "audioroom", "action": "join", "roomId": str(self.current_room_id)})
-            print(f"[DJ] Sent auto-join audio for {self.current_room_id}.")
+        else:
+            print("[DJ Error] Cannot auto-join audio: current_room_id is None.") # Debug Print
 
     def on_error(self, ws, error): print(f"WS Error: {error}")
     def on_close(self, ws, _, __): 
