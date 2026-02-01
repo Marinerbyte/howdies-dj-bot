@@ -1,9 +1,8 @@
 import websocket, json, threading, time, uuid, requests, traceback
-import music # Ye humara music plugin hai
+import music
 
 class HowdiesBot:
     def __init__(self):
-        # --- HARDCODED CREDENTIALS ---
         self.USERNAME = "kamina"
         self.PASSWORD = "p99665"
         self.DEFAULT_ROOM = "goodness"
@@ -12,7 +11,8 @@ class HowdiesBot:
         self.user_id = None
         self.ws = None
         self.running = False
-        self.plugin = music.DJPlugin(self) # Music plugin ko load karo
+        self.current_room_id = None # <-- Naya: Ab room ID store karenge
+        self.plugin = music.DJPlugin(self)
 
     def start(self):
         print(f"[DJ] Login attempt for: {self.USERNAME}")
@@ -51,12 +51,13 @@ class HowdiesBot:
             data = json.loads(message)
             handler = data.get("handler")
             
-            # --- AUTO JOIN LIVE LOGIC ---
-            if handler == "joinchatroom":
-                room_id = data.get("roomid")
-                print(f"[DJ] Joined Room. Auto-joining audio stage...")
-                # Turant audio stage join karne ka signal bhejo
-                self.send_json({"handler": "audioroom", "action": "join", "roomId": str(room_id)})
+            # --- ROOM JOIN CONFIRMATION ---
+            if handler == "joinchatroom" and data.get("name") == self.DEFAULT_ROOM:
+                self.current_room_id = data.get("roomid") # <-- Naya: Room ID store kiya
+                print(f"[DJ] Joined Room: {self.DEFAULT_ROOM} (ID: {self.current_room_id}). Auto-joining audio stage in 2s...")
+                
+                # Auto Join mein delay
+                threading.Timer(2, self._auto_join_audio).start()
 
             # System aur Chat messages ko plugin tak bhejo
             self.plugin.handle_message(data)
@@ -64,6 +65,11 @@ class HowdiesBot:
         except Exception as e:
             traceback.print_exc()
     
+    def _auto_join_audio(self):
+        if self.current_room_id:
+            self.send_json({"handler": "audioroom", "action": "join", "roomId": str(self.current_room_id)})
+            print(f"[DJ] Sent auto-join audio for {self.current_room_id}.")
+
     def on_error(self, ws, error): print(f"WS Error: {error}")
     def on_close(self, ws, _, __): 
         if self.running: 
