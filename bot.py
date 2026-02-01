@@ -3,16 +3,17 @@ import music # Ye humara music plugin hai
 
 class HowdiesBot:
     def __init__(self):
-        # --- HARDCODED CREDENTIALS ---
+        # --- HARDCODED CREDENTIALS (from n.py) ---
         self.USERNAME = "kamina"
         self.PASSWORD = "p99665"
-        self.DEFAULT_ROOM = "goodness" # Ab Default Room set hai
+        self.DEFAULT_ROOM = "goodness"
         
         self.token = None
-        self.user_id = None
+        self.user_id = None # MY_ID (from n.py)
         self.ws = None
         self.running = False
-        self.current_room_id = None # <-- Naya: Ab room ID store karenge
+        self.current_room_id = None # ROOM_ID (from n.py)
+        
         self.plugin = music.DJPlugin(self) # Music plugin ko load karo
 
     def start(self):
@@ -26,7 +27,7 @@ class HowdiesBot:
             if r.status_code == 200:
                 data = r.json()
                 self.token = data.get('token') or data.get('data', {}).get('token')
-                self.user_id = data.get('id') or data.get('user', {}).get('id')
+                self.user_id = data.get('id') or data.get('user', {}).get('id') # MY_ID
                 print(f"[DJ] Login Success! ID: {self.user_id}")
                 return True
             print(f"[DJ] API Error: {r.text}")
@@ -47,17 +48,18 @@ class HowdiesBot:
         print("[DJ] WebSocket Connected. Joining Room...")
         self.send_json({"handler": "joinchatroom", "id": uuid.uuid4().hex, "name": self.DEFAULT_ROOM})
 
-    def on_message(self, ws, message):
+    def on_message(self, ws, msg): # <-- n.py se inspired
         try:
-            data = json.loads(message)
-            handler = data.get("handler")
+            data = json.loads(msg)
+            # print("Received:", data) # Debugging ke liye on kar sakte ho
             
-            # --- ROOM JOIN CONFIRMATION ---
-            if handler == "joinchatroom" and data.get("name") == self.DEFAULT_ROOM:
-                self.current_room_id = data.get("roomid") # <-- Naya: Room ID store kiya
+            # --- n.py se ROOM_ID aur MY_ID update ---
+            if data.get("handler") == "login":
+                self.user_id = data.get("userid") # MY_ID
+
+            if data.get("handler") == "joinchatroom":
+                self.current_room_id = data.get("roomid") # ROOM_ID
                 print(f"[DJ] Joined Room: {self.DEFAULT_ROOM} (ID: {self.current_room_id}). Auto-joining audio stage in 2s...")
-                
-                # Auto Join mein delay (Server ko time do)
                 threading.Timer(2, self._auto_join_audio).start()
 
             # System aur Chat messages ko plugin tak bhejo
