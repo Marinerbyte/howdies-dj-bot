@@ -1,11 +1,11 @@
-import time, asyncio, threading, yt_dlp, re # Added re for robust fingerprint
+import time, asyncio, threading, yt_dlp, re, random
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
 class DJPlugin:
     def __init__(self, bot):
         self.bot = bot
-        self.sessions = {}  # { roomId: { 'pc', 'player', 'url', 'routerRtpCapabilities' } } # Added rtp capabilities
+        self.sessions = {}  # { roomId: { 'pc', 'player', 'url', 'routerRtpCapabilities' } }
         self.lock = threading.Lock()
 
     async def _get_stream_url(self, query):
@@ -39,7 +39,7 @@ class DJPlugin:
                 parts = text[1:].split()
                 cmd = parts[0].lower()
                 args = parts[1:]
-                room_id = data.get("roomid") # Ye room_id current_room_id se match hona chahiye
+                room_id = data.get("roomid")
 
                 if cmd == "play":
                     self._handle_play(room_id, args)
@@ -128,6 +128,7 @@ class DJPlugin:
                     self.sessions[room_id]['pc'] = pc
                 stream_url = self.sessions[room_id].get('url')
 
+                # If no stream_url, we just want to join the mic, not produce
                 if stream_url:
                     try:
                         player = MediaPlayer(stream_url)
@@ -147,6 +148,7 @@ class DJPlugin:
                     print(f"[Audio Debug {room_id}] Local description set. SDP (first 100 chars): {pc.localDescription.sdp[:100]}...")
                     
                     sdp = pc.localDescription.sdp
+                    # Robust fingerprint extraction
                     fp_match = re.search(r"fingerprint:sha-256 (.*)", sdp)
                     fp = fp_match.group(1).strip() if fp_match else "UNKNOWN_FP"
                     print(f"[Audio Debug {room_id}] Extracted DTLS Fingerprint: {fp}")
