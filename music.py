@@ -2,6 +2,7 @@ import time
 import asyncio
 import threading
 import yt_dlp
+# Fix: Nayi aiortc me MediaPlayer contrib se aata hai
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
@@ -72,7 +73,7 @@ class DJPlugin:
             with self.lock:
                 # Agar pehle se gana chal raha hai to use band karo
                 if room_id in self.sessions:
-                    self._stop_internal(room_id)
+                    self._stop_internal(room_id) # Purana gana band karo
                 self.sessions[room_id] = {'url': real_url}
 
             # Join request bhejo (bhale hi pehle se joined ho, handshake ke liye zaroori hai)
@@ -85,9 +86,10 @@ class DJPlugin:
         # Send leave signal
         self.bot.send_json({"handler": "audioroom", "action": "leave", "roomId": str(room_id)})
         self.bot.send_message(room_id, "⏹️ Music Stopped and Left Stage.")
-        # Auto re-join stage to be ready for next song
+        # Auto re-join stage (Ready for next song)
         time.sleep(1)
         self.bot.send_json({"handler": "audioroom", "action": "join", "roomId": str(room_id)})
+
 
     def _stop_internal(self, room_id):
         with self.lock:
@@ -104,17 +106,12 @@ class DJPlugin:
             transports = data.get("transports", {})
             send_t = transports.get("send", {})
             
-            room_id = None
-            with self.lock:
-                if self.sessions:
-                    for rid, s in self.sessions.items():
-                        if 'pc' not in s:
-                            room_id = rid
-                            break
+            # --- ROOM ID FIX ---
+            # Ab room ID ko bot ke main instance (bot.py) se lenge
+            room_id = self.bot.current_room_id 
             
-            if not room_id: # If only joined, not playing
-                # This part is tricky. For simplicity, we'll rely on play command to set room_id
-                # but a more robust bot would get room_id from the join event in bot.py
+            if not room_id:
+                print("[Audio Error] Could not determine room_id for transport-created.")
                 return
 
             if room_id and send_t:
@@ -141,7 +138,7 @@ class DJPlugin:
                     self.bot.send_json({"handler": "audioroom", "action": "connect-transport", "roomId": str(room_id), "direction": "send", "transportId": send_t.get("id"), "dtlsParameters": {"role": "client", "fingerprints": [{"algorithm": "sha-256", "value": fp}]}})
                     self.bot.send_json({"handler": "audioroom", "action": "transports-ready", "roomId": str(room_id)})
                     
-                    # Sirf tabhi 'produce' karo jab gana bajana ho
+                    # Sirf tabhi 'produce' karo jab gana bajana ho (stream_url hai)
                     if stream_url:
                         self.bot.send_json({"handler": "audioroom", "action": "produce", "roomId": str(room_id), "kind": "audio", "rtpParameters": {"codecs": [{"mimeType": "audio/opus", "payloadType": 111, "clockRate": 48000, "channels": 2, "parameters": {"minptime": 10, "useinbandfec": 1}}], "encodings": [{"ssrc": 11111111}]}, "requestId": int(time.time() * 1000)})
                     
