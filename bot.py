@@ -1,18 +1,19 @@
 import websocket, json, threading, time, uuid, requests, traceback
-import music
+import music # Ye humara music plugin hai
 
 class HowdiesBot:
     def __init__(self):
+        # --- HARDCODED CREDENTIALS ---
         self.USERNAME = "kamina"
         self.PASSWORD = "p99665"
-        self.DEFAULT_ROOM = "goodness"
+        self.DEFAULT_ROOM = "goodness" # Ab Default Room set hai
         
         self.token = None
         self.user_id = None
         self.ws = None
         self.running = False
         self.current_room_id = None # <-- Naya: Ab room ID store karenge
-        self.plugin = music.DJPlugin(self)
+        self.plugin = music.DJPlugin(self) # Music plugin ko load karo
 
     def start(self):
         print(f"[DJ] Login attempt for: {self.USERNAME}")
@@ -56,7 +57,7 @@ class HowdiesBot:
                 self.current_room_id = data.get("roomid") # <-- Naya: Room ID store kiya
                 print(f"[DJ] Joined Room: {self.DEFAULT_ROOM} (ID: {self.current_room_id}). Auto-joining audio stage in 2s...")
                 
-                # Auto Join mein delay
+                # Auto Join mein delay (Server ko time do)
                 threading.Timer(2, self._auto_join_audio).start()
 
             # System aur Chat messages ko plugin tak bhejo
